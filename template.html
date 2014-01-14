@@ -1,0 +1,286 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+	<title>#<?php echo $page_data['number'] ?></title>
+	<meta name="viewport" content="width=816">
+</head>
+<body style="width:800px; text-align:center">
+		
+<div>
+<span id='flasher'></span>
+<span id="picture_number">#<?php echo $page_data['number'] ?></span> — 
+<span class='relative_time' id='picture_time' base_time=''></span> 
+<span id='status'></span>
+<br><span id="time_string"><?php echo $page_data['time_string'] ?></span>
+</div>
+
+<div id="navigation" style="margin: 16px 0 0 0; font-size:18px">
+<?php
+	$array=array(
+		'first'=>'<first',
+		'back24h'=>'<24h',
+		'back10m'=>'<10m',						
+		'backmotion'=>'<motion',												
+		'back1'=>'<<',
+		'fwd1'=>'>>',									
+		'fwdmotion'=>'motion>',				
+		'fwd10m'=>'10m>',
+		'fwd24h'=>'24h>',				
+		'latest'=>'latest>'
+	);
+	echo_links($array);	
+?>
+</div>
+
+<div id="tooltip_container" style="width: 800px; position:relative; height: 16px;">
+	<div id="tooltip" style="text-align: center; font-size: 14px; position: absolute; bottom:-4px;"></div>
+</div>
+<canvas id='timeline' width=800 height=50 style="cursor: hand; cursor: pointer"></canvas>
+<img id="picture" src="<?php echo $page_data['image_url'] ?>">
+<div id="info" style="font-size: 12px"><?php echo $page_data['info'] ?></div>
+
+<script>
+// log to base 10
+function log10(num) {
+	return Math.log(num) / Math.log(10);
+}
+
+// zero-pad a number to the required length
+function pad(number, length) {
+    var str = '' + number;
+    while (str.length < length) {
+        str = '0' + str;
+    }
+    return str;
+}
+
+// given a positive number of seconds, resture a relative-time string. 5s, 27m, 6h etc.
+function timeIntervalDescriptor(interval) {
+	var reltime='?';
+	if (interval>=0) {	
+		var remain=interval;	
+		var days=Math.floor(interval/(3600*24));	
+		remain-=days*3600*24;
+		var hours=Math.floor(remain/3600);	
+		remain-=hours*3600;	
+		var mins=Math.floor(remain/60);
+		remain-=mins*60
+		var secs=remain;	
+		
+		if (interval>=3600*24) {
+			reltime = days + "d";
+		}	
+		else if (interval>=3600) {
+			reltime = hours + "h";
+		}
+		else if (interval>=60) {			
+			reltime = mins + "m";	
+		}
+		else { 
+			reltime = secs + "s";				
+		}
+	}
+	return reltime;
+}
+
+// current unix time expressed in seconds
+function now() {
+	return Math.floor(Date.now()/1000);
+}
+
+// clamp value between 0 and 1
+function clamp(value) {
+	return Math.min(Math.max(value,0),1);
+}
+
+function setFlasher(text) {
+	var flasher=document.getElementById('flasher');
+	flasher.innerHTML=text;
+}
+
+function setStatus(text) {
+	var status=document.getElementById('status');
+	status.innerHTML=text;
+}
+
+function flashFlasher() {
+	flasher.style.color='lightgreen';
+	setTimeout(function() {
+		flasher.style.color='green';
+	}, 500);
+}
+
+// update all info to the latest available
+function updateElements() {
+	console.log('update elements ' + data);
+	
+	var changed=lastNumber!=data.number;
+	lastNumber=data.number;		
+	if (changed) {
+		console.log("got new data");		
+		document.getElementById('picture').src=data.image_url;
+		document.getElementById('picture_number').innerHTML='#'+data.number;
+		document.getElementById('time_string').innerHTML=data.time_string;
+		document.getElementById('picture_time').attributes.base_time.value=data.time;
+		document.getElementById('info').innerHTML=data.info;		
+	}
+	else {
+		console.log("no change in data");
+	}
+	
+	// update the navigation links with their new destinations
+	for (var key in data.links) {
+		if (data.links.hasOwnProperty(key)) {		
+			var element=document.getElementById(key);			
+			if (element&&element.tagName=='A') {														
+				element.href=data.links[key];											
+			}
+		}
+	}	
+	
+	// update title and flasher to reflect time since last motion
+	if (data.latest) {
+		var timeNow=now();
+		var sincePreviousMotion=now()-data.prev_motion_time;
+		var sinceThisMotion=data.motion?(now()-data.time):timeNow;
+		var sinceMotion=Math.min(sincePreviousMotion,sinceThisMotion);
+		var live=(timeNow-data.time)<75;
+		var active=sinceMotion<60;		
+		var motionStatus=active?'motion detected':timeIntervalDescriptor(sinceMotion) + ' since motion';
+		
+		document.title=live?'Live (' + motionStatus + ')':'Stale';
+		setFlasher(live?'live':'');
+		setStatus('(' + motionStatus + ')');		
+	}	
+	
+	// update relative time
+	var descriptor=timeIntervalDescriptor(now()-data.time);
+	document.getElementById('picture_time').innerHTML = descriptor + ' ago';	
+}
+
+// draw the timeline control with the given data
+function drawControl() {
+	console.log("draw control " + timeData);
+	
+	// get canvas object and clear current contents
+	var canvas=document.getElementById('timeline');
+	var canvasLeft=canvas.getBoundingClientRect().left;	
+	
+	var ctx = canvas.getContext('2d');
+	ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+	// transform time to x position for plot
+	function txTime(time) {
+		var range=timeData.end-timeData.start;
+		var result=((time-timeData.start)/range)*canvas.width;
+		return result;
+	}
+	
+	function txPos(pos) {
+		var range=timeData.end-timeData.start;
+		return (pos/canvas.width)*range + (1*timeData.start);
+	}
+	
+	// plot timeData on the timeline
+	function plot(from, to, color, intensity, lineWidth, lineHeight) {
+		//console.log('plot ' + from + " " + to + " " + color + " " + intensity + " " + lineWidth + " " + lineHeight);
+		ctx.fillStyle = "rgba(" + color + ", " + intensity + ")";
+		ctx.fillRect (txTime(from)-lineHeight, (1-lineWidth)*canvas.height*0.5, lineHeight+txTime(to)-txTime(from), canvas.height*lineWidth);		
+	}
+
+	for (var time in timeData.points) {
+		if (timeData.points.hasOwnProperty(time)) {
+			if (!firstTime) {
+				firstTime=time;
+			}
+			lastTime=time;
+			
+			var difference=Math.abs(timeData.points[time].d);
+			var brightness=Math.abs(timeData.points[time].b);					
+			
+			// plot brightness
+			// map 5000 (dark) to 0, 500000 (very bright) to 1
+			var brightnessNorm=(log10(brightness/5+1)-3)/2;
+			plot(time, time, "34, 88, 133", clamp(1-brightnessNorm), 0.5, 1);	
+			
+			// plot motion
+			// map 25 (hardly any change) to 0.1, 2500 (lots of change) to 1
+			var differenceNorm=log10(difference/25+1)/2;
+			plot(time, time, "255, 20, 20", clamp(differenceNorm), 0.7, 1);				
+		}
+	}
+	
+	// draw cursor line line for current picture time
+	plot(data.time, data.time, "0, 0, 0", 0.9, 1, 2);	
+		
+	if (!eventHandlersInstalled) {
+		canvas.onclick=function(e) {
+			var targetTime=txPos(e.clientX-canvasLeft);
+			var newLoc='<?php echo $page_data['root']?>';
+			if (targetTime<=lastTime) {
+				newLoc+='?nearest='+targetTime;			
+			}
+			window.location=newLoc;
+		};
+		canvas.onmousemove=function(e) {				
+			var time=txPos(e.clientX-canvasLeft);
+			var tooltip=document.getElementById('tooltip');
+			var date = new Date(time*1000);
+			var timeStr=pad(date.getHours(), 2) + ":" + pad(date.getMinutes(),2);
+			var tooltipWidth=32;
+			
+			tooltip.innerHTML=(time>=firstTime&&time<=lastTime)?timeStr:' ';		
+			tooltip.style.width=tooltipWidth + 'px';
+			tooltip.style.left=Math.min(Math.max((e.clientX-canvas.getBoundingClientRect().left - tooltipWidth/2),0),canvas.width-tooltipWidth) + "px";
+		};
+		canvas.onmouseout=function() {
+			var tooltip=document.getElementById('tooltip');
+			tooltip.innerHTML='';
+		};		
+		eventHandlersInstalled=true;
+	}
+}
+
+function refresh(jsonSource, consumer) {
+	function reqListener () {
+		consumer(JSON.parse(this.responseText));
+	}
+	var req = new XMLHttpRequest();	
+	req.onload = reqListener;
+	req.open("get", jsonSource, true);
+	req.send();	
+}
+
+function refreshMain() {
+	refresh('<?php echo $page_data['root'].($page_data['latest']?'':$page_data['number']).'?format=json' ?>', function(d) { data=d });
+}
+
+function refreshTimeline() {
+	var start=Math.floor(data.time/86400)*86400;
+	var end=start+86400;
+	refresh('<?php echo $page_data['root']."data.php"?>' + '?start=' + start + "&end=" + end, function(d) { timeData=d });
+}
+
+function repeater(starting) {
+	updateElements();
+	drawControl();	
+	flashFlasher();	
+	
+	refreshMain();
+	refreshTimeline();
+	setTimeout(repeater, 1000);			
+}
+
+// globals
+var eventHandlersInstalled=false;
+var firstTime=false;	
+var lastTime=false;
+var lastNumber=0;
+var data=JSON.parse('<?php echo json_encode($page_data) ?>');
+var timeData=JSON.parse('<?php echo json_encode($time_data) ?>');
+repeater();
+
+</script>
+
+</body>
+</html>
