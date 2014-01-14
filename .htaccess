@@ -4,3 +4,5 @@
 # Allow from ::1
 
 DirectoryIndex view.php
+RewriteRule ^(\d+)$ 			?picture=$1 [L,QSA]
+RewriteRule ^view.php$			. [L,R=301]
