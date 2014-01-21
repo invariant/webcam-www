@@ -1,17 +1,3 @@
-# Order Deny,Allow
-# Deny from all
-# Allow from 212.159.103.66
-# Allow from 81.174.171.156
-# Allow from ::1
-
-AuthUserFile "/srv/data/web/vhosts/nikz.eu/.htpasswd"
-AuthName "Please Log In"
-AuthType Basic
-
-<Files "view.php">
-  Require valid-user
-</Files>
-
 DirectoryIndex view.php
 RewriteRule ^(\d+)$ 			?picture=$1 [L,QSA]
 RewriteRule ^view.php$			. [L,R=301]
